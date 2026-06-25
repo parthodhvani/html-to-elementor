@@ -1,0 +1,285 @@
+'use strict';
+
+/**
+ * Chromium rendering + extraction engine.
+ *
+ * Loads a source HTML page in headless Chromium, waits for fonts / images /
+ * network idle, then extracts:
+ *   - the segmented top-level sections (outerHTML + computed styles + box model)
+ *   - per-breakpoint (desktop / tablet / mobile) computed values
+ *   - inlined CSS and JS assets
+ *   - full-page screenshots per breakpoint
+ *
+ * The Chromium-rendered output is treated as the source of truth.
+ */
+
+const fs = require('fs');
+const path = require('path');
+const { pathToFileURL } = require('url');
+const puppeteer = require('puppeteer');
+
+const { browserPageSegmenter } = require('./segmenter');
+
+const DEFAULT_CONFIG = {
+  breakpoints: { desktop: 1280, tablet: 768, mobile: 375 },
+  waitUntil: 'networkidle0',
+  timeout: 60000,
+  captureScreenshots: true,
+  conversionMode: 'preserve',
+  widgetConfidence: 95,
+  debug: false,
+};
+
+/**
+ * Render and extract a layout document from an HTML entry file.
+ *
+ * @param {string} inputPath Absolute path to the entry .html file.
+ * @param {string} outDir    Directory for screenshots and artifacts.
+ * @param {object} userConfig Partial configuration overrides.
+ * @returns {Promise<object>} The layout document.
+ */
+async function renderToLayout(inputPath, outDir, userConfig = {}) {
+  const config = { ...DEFAULT_CONFIG, ...userConfig };
+  config.breakpoints = { ...DEFAULT_CONFIG.breakpoints, ...(userConfig.breakpoints || {}) };
+
+  if (!fs.existsSync(inputPath)) {
+    throw new Error(`Input file not found: ${inputPath}`);
+  }
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const browser = await puppeteer.launch({
+    headless: 'new',
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--font-render-hinting=none',
+    ],
+  });
+
+  try {
+    const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(config.timeout);
+    page.setDefaultTimeout(config.timeout);
+
+    const fileUrl = pathToFileURL(inputPath).href;
+
+    // Desktop pass — full extraction + segmentation.
+    await page.setViewport({ width: config.breakpoints.desktop, height: 900, deviceScaleFactor: 1 });
+    await page.goto(fileUrl, { waitUntil: config.waitUntil, timeout: config.timeout });
+    await waitForStable(page, config);
+
+    const meta = await page.evaluate(() => ({
+      title: document.title || '',
+      url: location.href,
+      width: document.documentElement.scrollWidth,
+      height: document.documentElement.scrollHeight,
+    }));
+
+    const assets = await page.evaluate(extractAssetsInPage);
+
+    // Segment sections and tag them so we can re-measure across breakpoints.
+    let sections = await page.evaluate(browserPageSegmenter);
+
+    const responsive = { desktop: indexBySection(sections) };
+    const screenshots = {};
+
+    if (config.captureScreenshots) {
+      screenshots.desktop = await screenshot(page, outDir, 'desktop');
+    }
+
+    // Tablet + mobile passes — re-measure tagged sections only.
+    for (const device of ['tablet', 'mobile']) {
+      const width = config.breakpoints[device];
+      if (!width) continue;
+      await page.setViewport({ width, height: 900, deviceScaleFactor: 1 });
+      await sleep(350);
+      await waitForStable(page, config);
+      responsive[device] = await page.evaluate(measureTaggedSections);
+      if (config.captureScreenshots) {
+        screenshots[device] = await screenshot(page, outDir, device);
+      }
+    }
+
+    // Merge responsive measurements back into each section.
+    sections = sections.map((section) => {
+      const idx = section.index;
+      return {
+        ...section,
+        responsive: {
+          desktop: responsive.desktop[idx] || null,
+          tablet: (responsive.tablet || {})[idx] || null,
+          mobile: (responsive.mobile || {})[idx] || null,
+        },
+      };
+    });
+
+    return {
+      meta: { ...meta, generatedAt: new Date().toISOString() },
+      breakpoints: config.breakpoints,
+      screenshots,
+      assets,
+      sections: sections.map(stripMarkers),
+    };
+  } finally {
+    await browser.close();
+  }
+}
+
+/**
+ * Wait for fonts and images to settle in addition to the navigation wait.
+ *
+ * @param {import('puppeteer').Page} page   Page.
+ * @param {object}                   config Config.
+ */
+async function waitForStable(page, config) {
+  try {
+    await page.evaluate(async () => {
+      if (document.fonts && document.fonts.ready) {
+        await document.fonts.ready;
+      }
+      const imgs = Array.from(document.images || []);
+      await Promise.all(
+        imgs.map((img) =>
+          img.complete
+            ? Promise.resolve()
+            : new Promise((res) => {
+                img.addEventListener('load', res, { once: true });
+                img.addEventListener('error', res, { once: true });
+              })
+        )
+      );
+    });
+  } catch (e) {
+    if (config.debug) {
+      // eslint-disable-next-line no-console
+      console.error('waitForStable warning:', e.message);
+    }
+  }
+}
+
+/**
+ * Capture a full-page screenshot.
+ *
+ * @param {import('puppeteer').Page} page   Page.
+ * @param {string}                   outDir Output dir.
+ * @param {string}                   device Device label.
+ * @returns {Promise<string>} Absolute path to the PNG.
+ */
+async function screenshot(page, outDir, device) {
+  const file = path.join(outDir, `shot-${device}.png`);
+  await page.screenshot({ path: file, fullPage: true });
+  return file;
+}
+
+/**
+ * Build an index map { sectionIndex: measurement } from segmented sections.
+ *
+ * @param {Array<object>} sections Sections.
+ * @returns {Object<number,object>}
+ */
+function indexBySection(sections) {
+  const out = {};
+  for (const s of sections) {
+    out[s.index] = { bbox: s.bbox, styles: s.styles };
+  }
+  return out;
+}
+
+/**
+ * Remove our internal marker attribute from captured HTML.
+ *
+ * @param {object} section Section.
+ * @returns {object}
+ */
+function stripMarkers(section) {
+  return {
+    ...section,
+    html: (section.html || '').replace(/\sdata-h2e-section="\d+"/g, ''),
+  };
+}
+
+/* ----------------------------------------------------------------------------
+ * In-page (browser context) helpers. These run inside Chromium via evaluate().
+ * ------------------------------------------------------------------------- */
+
+/**
+ * Collect inlined CSS/JS assets from the rendered document.
+ * Executed in the browser context.
+ *
+ * @returns {object}
+ */
+function extractAssetsInPage() {
+  const stylesheets = [];
+  let combinedCss = '';
+
+  for (const sheet of Array.from(document.styleSheets)) {
+    try {
+      const rules = sheet.cssRules;
+      if (rules) {
+        for (const rule of Array.from(rules)) {
+          combinedCss += rule.cssText + '\n';
+        }
+      } else if (sheet.href) {
+        stylesheets.push(sheet.href);
+      }
+    } catch (e) {
+      // Cross-origin sheet whose rules cannot be read: keep its href.
+      if (sheet.href) stylesheets.push(sheet.href);
+    }
+  }
+
+  let combinedJs = '';
+  const scripts = [];
+  for (const script of Array.from(document.querySelectorAll('script'))) {
+    if (script.src) {
+      scripts.push(script.src);
+    } else if (script.textContent && script.textContent.trim()) {
+      combinedJs += script.textContent + '\n';
+    }
+  }
+
+  return { stylesheets, combinedCss, scripts, combinedJs };
+}
+
+/**
+ * Re-measure previously tagged sections at the current viewport.
+ * Executed in the browser context.
+ *
+ * @returns {Object<number,object>}
+ */
+function measureTaggedSections() {
+  const props = [
+    'display', 'backgroundColor', 'color', 'paddingTop', 'paddingBottom',
+    'paddingLeft', 'paddingRight', 'marginTop', 'marginBottom',
+    'flexDirection', 'justifyContent', 'alignItems', 'textAlign', 'fontSize',
+  ];
+  const out = {};
+  document.querySelectorAll('[data-h2e-section]').forEach((el) => {
+    const idx = parseInt(el.getAttribute('data-h2e-section'), 10);
+    const rect = el.getBoundingClientRect();
+    const cs = window.getComputedStyle(el);
+    const styles = {};
+    props.forEach((p) => {
+      styles[p] = cs[p];
+    });
+    out[idx] = {
+      bbox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      styles,
+    };
+  });
+  return out;
+}
+
+/**
+ * Sleep helper (Node context).
+ *
+ * @param {number} ms Milliseconds.
+ * @returns {Promise<void>}
+ */
+function sleep(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+module.exports = { renderToLayout, DEFAULT_CONFIG };
