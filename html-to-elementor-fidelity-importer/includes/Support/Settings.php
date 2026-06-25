@@ -33,6 +33,13 @@ final class Settings {
 			'service_script'     => '', // Absolute path to chromium-service/cli.js. Auto-detected when empty.
 			'service_url'        => 'http://127.0.0.1:8745',
 			'service_token'      => '',
+			// When PHP runs under XAMPP/LAMPP/MAMP, the inherited LD_LIBRARY_PATH
+			// points at bundled libraries that are too old for the system Node
+			// binary (e.g. "libstdc++.so.6: version GLIBCXX_3.4.21 not found").
+			// Stripping these loader variables from the spawned Node process lets
+			// it use the system libraries instead.
+			'node_strip_env'     => true,
+			'node_ld_library_path' => '', // Optional explicit LD_LIBRARY_PATH for Node.
 			// Conversion behaviour.
 			'conversion_mode'    => 'preserve', // "preserve" | "widgets".
 			'widget_confidence'  => 95,         // Minimum % confidence to convert a node to a widget.

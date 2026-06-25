@@ -99,7 +99,7 @@ final class ChromiumService {
 			1 => array( 'pipe', 'w' ),
 			2 => array( 'pipe', 'w' ),
 		);
-		$process = proc_open( $cmd, $descriptor, $pipes, $job_dir );
+		$process = proc_open( $cmd, $descriptor, $pipes, $job_dir, $this->child_env( $settings ) );
 		if ( ! is_resource( $process ) ) {
 			throw new \RuntimeException( 'Unable to start Node process.' );
 		}
@@ -170,6 +170,65 @@ final class ChromiumService {
 			throw new \RuntimeException( 'Invalid JSON from HTTP render service.' );
 		}
 		return $json;
+	}
+
+	/**
+	 * Build a sanitized environment for the spawned Node process.
+	 *
+	 * Under XAMPP/LAMPP/MAMP the PHP process inherits an LD_LIBRARY_PATH (and
+	 * sometimes LD_PRELOAD) that points at bundled libraries which are older
+	 * than the system Node binary requires, producing errors such as:
+	 *   "node: .../libstdc++.so.6: version `GLIBCXX_3.4.21' not found".
+	 * Removing these loader variables lets Node load the correct system
+	 * libraries. The behaviour is configurable via settings.
+	 *
+	 * @param array<string,mixed> $settings Effective settings.
+	 * @return array<string,string>|null Environment for proc_open (null = inherit).
+	 */
+	private function child_env( array $settings ): ?array {
+		$strip            = (bool) ( $settings['node_strip_env'] ?? true );
+		$ld_library_path  = trim( (string) ( $settings['node_ld_library_path'] ?? '' ) );
+
+		// Nothing to change: inherit the parent environment unmodified.
+		if ( ! $strip && '' === $ld_library_path ) {
+			return null;
+		}
+
+		$env = getenv();
+		if ( ! is_array( $env ) ) {
+			$env = array();
+		}
+
+		if ( $strip ) {
+			$dynamic_loader_vars = array(
+				'LD_LIBRARY_PATH',
+				'LD_PRELOAD',
+				'DYLD_LIBRARY_PATH',
+				'DYLD_INSERT_LIBRARIES',
+				'DYLD_FALLBACK_LIBRARY_PATH',
+			);
+			foreach ( $dynamic_loader_vars as $var ) {
+				unset( $env[ $var ] );
+			}
+		}
+
+		// Optional explicit override (takes precedence over stripping).
+		if ( '' !== $ld_library_path ) {
+			$env['LD_LIBRARY_PATH'] = $ld_library_path;
+		}
+
+		// Ensure PATH is always present so the `node` binary can be resolved.
+		if ( empty( $env['PATH'] ) ) {
+			$path = getenv( 'PATH' );
+			$env['PATH'] = false !== $path && '' !== $path ? $path : '/usr/local/bin:/usr/bin:/bin';
+		}
+
+		// Cast all values to strings for proc_open.
+		$clean = array();
+		foreach ( $env as $key => $value ) {
+			$clean[ (string) $key ] = (string) $value;
+		}
+		return $clean;
 	}
 
 	/**

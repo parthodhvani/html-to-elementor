@@ -110,3 +110,23 @@ node chromium-service/cli.js --input page.html --out layout.json --config config
 wp h2e import /path/to/page.html --title="Landing" --mode=preserve
 wp h2e batch  /path/to/site-export --mode=preserve
 ```
+
+## Troubleshooting
+
+### `node: ... libstdc++.so.6: version 'GLIBCXX_3.4.21' not found` (XAMPP / LAMPP / MAMP)
+
+When WordPress runs under XAMPP/LAMPP/MAMP, PHP inherits an `LD_LIBRARY_PATH`
+pointing at the stack's bundled libraries, which are usually older than the system
+Node binary requires. PHP then passes that path to the spawned `node`, which fails
+to load with errors like `CXXABI_1.3.11`/`GLIBCXX_3.4.21 not found`.
+
+The plugin fixes this automatically by stripping `LD_LIBRARY_PATH` / `LD_PRELOAD`
+(and the macOS `DYLD_*` equivalents) from the Node child process so it uses the
+system libraries. This is controlled by two settings (defaults shown):
+
+* `node_strip_env` = `true` — strip dynamic-loader variables when spawning Node.
+* `node_ld_library_path` = `''` — set this to force a specific `LD_LIBRARY_PATH`
+  for Node instead of stripping it.
+
+If you still see the error, ensure a working `node` (18+) is on the server `PATH`
+and set the absolute Node binary path in **HTML → Elementor** settings.

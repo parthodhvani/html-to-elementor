@@ -55,6 +55,12 @@ Yes. Rendering uses headless Chromium through Puppeteer. The PHP plugin spawns t
 = Will it modify my layout? =
 No. By default each detected section becomes an Elementor container holding the original HTML.
 
+= I get "libstdc++.so.6: version GLIBCXX_... not found" under XAMPP/LAMPP/MAMP =
+PHP inherits an LD_LIBRARY_PATH pointing at the stack's bundled libraries, which are
+too old for the system Node binary. The plugin strips LD_LIBRARY_PATH/LD_PRELOAD from
+the spawned Node process automatically (setting "node_strip_env", on by default), so
+Node uses the system libraries instead.
+
 == Changelog ==
 
 = 1.0.0 =
