@@ -16,113 +16,143 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * The JSON generator. Walks the segmented sections and emits one Elementor
- * container per section. By default each container holds a single HTML widget
- * with the section's original markup (preservation mode). When widget mode is
- * enabled, sections that map to a widget with >= the confidence threshold are
- * converted; everything else stays as original HTML.
+ * The Elementor JSON generator.
+ *
+ * Default ("native") mode rebuilds each section as nested Elementor containers
+ * and native widgets via {@see LayoutTreeConverter}, mapping computed CSS to
+ * Elementor controls and using HTML widgets only as a last resort.
+ *
+ * Legacy ("preserve") mode wraps each section's original HTML in a single HTML
+ * widget for maximum raw fidelity.
  */
 final class ElementorJsonGenerator {
 
-	private ContainerFactory $containers;
-	private WidgetFactory $widgets;
+	private LayoutTreeConverter $converter;
+	private DesignTokens $tokens;
 
 	public function __construct() {
-		$this->containers = new ContainerFactory();
-		$this->widgets    = new WidgetFactory();
+		$this->converter = new LayoutTreeConverter();
+		$this->tokens    = new DesignTokens();
 	}
 
 	/**
-	 * Generate Elementor data plus a structured report.
+	 * Generate Elementor data plus a structured report and design tokens.
 	 *
 	 * @param RenderResult        $result Layout document.
-	 * @param array<string,mixed> $opts   { mode: "preserve"|"widgets", confidence:int }.
-	 * @return array{data:array<int,array<string,mixed>>,report:array<string,mixed>}
+	 * @param array<string,mixed> $opts   { mode: "native"|"preserve" }.
+	 * @return array{data:array<int,array<string,mixed>>,report:array<string,mixed>,tokens:array<string,mixed>,assets:array<string,mixed>}
 	 */
 	public function generate( RenderResult $result, array $opts = array() ): array {
-		$mode       = (string) ( $opts['mode'] ?? 'preserve' );
-		$confidence = (int) ( $opts['confidence'] ?? 95 );
-		$detector   = new WidgetDetector( $confidence );
+		$mode = (string) ( $opts['mode'] ?? 'native' );
 
-		$elements = array();
-		$report   = array(
-			'sections'        => 0,
-			'containers'      => 0,
-			'html_blocks'     => 0,
-			'widgets'         => 0,
-			'widget_breakdown'=> array(),
-			'mode'            => $mode,
-		);
-
-		// Global CSS/JS preservation block injected once at the top so every
-		// section's original markup renders with its original styling.
-		$assets    = $result->assets();
-		$style_html = $this->build_asset_block( $assets );
-		if ( '' !== $style_html ) {
-			$elements[] = $this->containers->section(
-				array( 'styles' => array(), 'bbox' => array() ),
-				array( $this->widgets->html( $style_html ) )
-			);
-			$report['containers']++;
-			$report['html_blocks']++;
+		if ( 'preserve' === $mode ) {
+			return $this->generate_preserve( $result );
 		}
 
-		foreach ( $result->sections() as $section ) {
-			$report['sections']++;
-			$html = (string) ( $section['html'] ?? '' );
+		return $this->generate_native( $result );
+	}
 
-			$child = null;
-			if ( 'widgets' === $mode ) {
-				$detected = $detector->detect( $html );
-				if ( null !== $detected ) {
-					$child = $this->widgets->widget( $detected['type'], $detected['settings'] );
-					$report['widgets']++;
-					$report['widget_breakdown'][ $detected['type'] ] =
-						( $report['widget_breakdown'][ $detected['type'] ] ?? 0 ) + 1;
+	/**
+	 * Native reconstruction: nested containers + native widgets.
+	 *
+	 * @param RenderResult $result Layout document.
+	 * @return array{data:array<int,array<string,mixed>>,report:array<string,mixed>,tokens:array<string,mixed>,assets:array<string,mixed>}
+	 */
+	private function generate_native( RenderResult $result ): array {
+		$this->converter->reset_stats();
+		$elements = array();
+		$sections = $result->sections();
+
+		foreach ( $sections as $section ) {
+			$tree = $section['tree'] ?? null;
+			if ( is_array( $tree ) ) {
+				$container = $this->converter->convert_section( $tree );
+				if ( null !== $container ) {
+					$elements[] = $container;
+					continue;
 				}
 			}
-
-			if ( null === $child ) {
-				$child = $this->widgets->html( $html );
-				$report['html_blocks']++;
-			}
-
-			$elements[] = $this->containers->section( $section, array( $child ) );
-			$report['containers']++;
+			// Fallback: whole section as HTML when no usable tree was produced.
+			$elements[] = $this->section_html_fallback( $section );
 		}
+
+		$stats  = $this->converter->stats();
+		$tokens = $this->tokens->extract( $sections );
+
+		$report = array(
+			'mode'             => 'native',
+			'sections'         => count( $sections ),
+			'containers'       => (int) $stats['containers'],
+			'widgets'          => (int) $stats['widgets'],
+			'native_widgets'   => (int) $stats['native_widgets'],
+			'html_widgets'     => (int) $stats['html_widgets'],
+			'widget_breakdown' => $stats['widget_breakdown'],
+			'components'       => $stats['roles'],
+		);
 
 		return array(
 			'data'   => $elements,
 			'report' => $report,
+			'tokens' => $tokens,
+			'assets' => $result->assets(),
 		);
 	}
 
 	/**
-	 * Build a single HTML blob that re-injects collected CSS and JS so the
-	 * preserved markup renders identically to the source.
+	 * Legacy preservation mode.
 	 *
-	 * @param array<string,mixed> $assets Asset bundle from the renderer.
+	 * @param RenderResult $result Layout document.
+	 * @return array{data:array<int,array<string,mixed>>,report:array<string,mixed>,tokens:array<string,mixed>,assets:array<string,mixed>}
 	 */
-	private function build_asset_block( array $assets ): string {
-		$out = '';
+	private function generate_preserve( RenderResult $result ): array {
+		$elements = array();
+		$sections = $result->sections();
 
-		foreach ( (array) ( $assets['stylesheets'] ?? array() ) as $href ) {
-			$href = esc_url( (string) $href );
-			if ( '' !== $href ) {
-				$out .= '<link rel="stylesheet" href="' . $href . '" />' . "\n";
-			}
+		foreach ( $sections as $section ) {
+			$elements[] = $this->section_html_fallback( $section );
 		}
 
-		$css = (string) ( $assets['combinedCss'] ?? '' );
-		if ( '' !== trim( $css ) ) {
-			$out .= '<style>' . "\n" . $css . "\n" . '</style>' . "\n";
-		}
+		$report = array(
+			'mode'             => 'preserve',
+			'sections'         => count( $sections ),
+			'containers'       => count( $elements ),
+			'widgets'          => count( $elements ),
+			'native_widgets'   => 0,
+			'html_widgets'     => count( $elements ),
+			'widget_breakdown' => array( 'html' => count( $elements ) ),
+			'components'       => array(),
+		);
 
-		$js = (string) ( $assets['combinedJs'] ?? '' );
-		if ( '' !== trim( $js ) ) {
-			$out .= '<script>' . "\n" . $js . "\n" . '</script>' . "\n";
-		}
+		return array(
+			'data'   => $elements,
+			'report' => $report,
+			'tokens' => $this->tokens->extract( $sections ),
+			'assets' => $result->assets(),
+		);
+	}
 
-		return $out;
+	/**
+	 * Build a container holding the section's original HTML in one HTML widget.
+	 *
+	 * @param array<string,mixed> $section Section data.
+	 * @return array<string,mixed>
+	 */
+	private function section_html_fallback( array $section ): array {
+		$html = (string) ( $section['html'] ?? '' );
+		return array(
+			'id'       => ElementId::generate(),
+			'elType'   => 'container',
+			'settings' => array( 'content_width' => 'full', 'flex_direction' => 'column' ),
+			'elements' => array(
+				array(
+					'id'         => ElementId::generate(),
+					'elType'     => 'widget',
+					'widgetType' => 'html',
+					'settings'   => array( 'html' => $html ),
+					'elements'   => array(),
+				),
+			),
+			'isInner'  => false,
+		);
 	}
 }

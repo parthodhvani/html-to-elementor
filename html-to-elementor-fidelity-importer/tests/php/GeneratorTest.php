@@ -1,6 +1,6 @@
 <?php
 /**
- * Unit tests for the Elementor JSON generator and widget detector.
+ * Unit tests for the native Elementor reconstruction engine.
  *
  * @package HtmlToElementor
  */
@@ -11,86 +11,142 @@ namespace HtmlToElementor\Tests;
 
 use HtmlToElementor\Services\RenderResult;
 use HtmlToElementor\Elementor\ElementorJsonGenerator;
-use HtmlToElementor\Elementor\WidgetDetector;
+use HtmlToElementor\Elementor\CssMapper;
+use HtmlToElementor\Elementor\WidgetClassifier;
 use PHPUnit\Framework\TestCase;
 
 final class GeneratorTest extends TestCase {
 
 	/**
-	 * Build a minimal layout document for tests.
+	 * A small layout document with a computed-style DOM tree (as the Chromium
+	 * service produces). Hero section + a flex row of two cards.
 	 *
 	 * @return array<string,mixed>
 	 */
 	private function layout(): array {
+		$heading = function ( string $tag, string $text, array $extra = array() ): array {
+			return array_merge(
+				array( 'tag' => $tag, 'cls' => '', 'text' => $text, 's' => array( 'fs' => '32px', 'fw' => '700', 'color' => 'rgb(13,71,161)' ), 'atomic' => true, 'html' => "<$tag>$text</$tag>" ),
+				$extra
+			);
+		};
+		$para = function ( string $text ): array {
+			return array( 'tag' => 'p', 'cls' => '', 'text' => $text, 's' => array( 'fs' => '16px' ), 'atomic' => true, 'html' => "<p>$text</p>" );
+		};
+
 		return array(
-			'meta'        => array( 'title' => 'Sample' ),
-			'assets'      => array( 'combinedCss' => 'body{color:#000}' ),
-			'sections'    => array(
+			'meta'     => array( 'title' => 'Sample' ),
+			'assets'   => array( 'combinedCss' => 'body{color:#000}' ),
+			'sections' => array(
 				array(
-					'tag'    => 'header',
-					'html'   => '<header class="hero"><h1>Hello</h1><p>World</p></header>',
-					'bbox'   => array( 'height' => 400 ),
-					'styles' => array( 'backgroundColor' => 'rgb(13, 71, 161)', 'paddingTop' => '80px', 'paddingBottom' => '80px' ),
+					'tag'  => 'header',
+					'tree' => array(
+						'tag' => 'header', 'cls' => 'hero', 'text' => '',
+						's'   => array( 'disp' => 'block', 'bg' => 'rgb(13, 71, 161)', 'pt' => 80, 'pb' => 80, 'h' => 400 ),
+						'children' => array(
+							$heading( 'h1', 'Hello World' ),
+							$para( 'Tagline goes here' ),
+						),
+					),
 				),
 				array(
-					'tag'    => 'h2',
-					'html'   => '<h2>Just a heading</h2>',
-					'bbox'   => array( 'height' => 60 ),
-					'styles' => array( 'backgroundColor' => 'transparent' ),
+					'tag'  => 'div',
+					'tree' => array(
+						'tag' => 'div', 'cls' => 'features', 'text' => '',
+						's'   => array( 'disp' => 'flex', 'fd' => 'row', 'gap' => '24px' ),
+						'children' => array(
+							array(
+								'tag' => 'div', 'cls' => 'card', 'text' => '',
+								's'   => array( 'disp' => 'block', 'bg' => 'rgb(255,255,255)', 'br' => 10, 'sh' => 'rgba(0, 0, 0, 0.08) 0px 6px 18px 0px' ),
+								'children' => array( $heading( 'h3', 'Fast' ), $para( 'Speedy.' ) ),
+							),
+							array(
+								'tag' => 'div', 'cls' => 'card', 'text' => '',
+								's'   => array( 'disp' => 'block', 'bg' => 'rgb(255,255,255)', 'br' => 10 ),
+								'children' => array( $heading( 'h3', 'Reliable' ), $para( 'Solid.' ) ),
+							),
+						),
+					),
 				),
 			),
 		);
 	}
 
-	public function test_preserve_mode_wraps_each_section_in_a_container(): void {
+	public function test_native_mode_emits_nested_containers_and_widgets(): void {
 		$gen    = new ElementorJsonGenerator();
-		$result = $gen->generate( RenderResult::from_array( $this->layout() ), array( 'mode' => 'preserve' ) );
+		$result = $gen->generate( RenderResult::from_array( $this->layout() ), array( 'mode' => 'native' ) );
 
-		// 1 asset container + 2 section containers.
-		$this->assertCount( 3, $result['data'] );
-		foreach ( $result['data'] as $el ) {
-			$this->assertSame( 'container', $el['elType'] );
-			$this->assertNotEmpty( $el['id'] );
+		$this->assertSame( 'native', $result['report']['mode'] );
+		$this->assertCount( 2, $result['data'] ); // two top-level sections.
+
+		// No HTML widgets for this clean markup.
+		$this->assertSame( 0, $result['report']['html_widgets'] );
+		$this->assertGreaterThanOrEqual( 4, $result['report']['native_widgets'] );
+
+		// Hero -> container with heading + text widgets.
+		$hero = $result['data'][0];
+		$this->assertSame( 'container', $hero['elType'] );
+		$this->assertSame( 'rgb(13, 71, 161)', $hero['settings']['background_color'] );
+		$types = array_column( $hero['elements'], 'widgetType' );
+		$this->assertContains( 'heading', $types );
+		$this->assertContains( 'text-editor', $types );
+	}
+
+	public function test_flex_row_becomes_row_container_with_nested_card_containers(): void {
+		$gen    = new ElementorJsonGenerator();
+		$result = $gen->generate( RenderResult::from_array( $this->layout() ), array( 'mode' => 'native' ) );
+
+		$features = $result['data'][1];
+		$this->assertSame( 'row', $features['settings']['flex_direction'] );
+		$this->assertCount( 2, $features['elements'] ); // two card containers.
+		foreach ( $features['elements'] as $card ) {
+			$this->assertSame( 'container', $card['elType'] );
+			$this->assertTrue( $card['isInner'] );
+			$this->assertSame( '10', (string) $card['settings']['border_radius']['top'] );
 		}
-		// First section keeps original HTML verbatim in an html widget.
-		$section = $result['data'][1];
-		$this->assertSame( 'widget', $section['elements'][0]['elType'] );
-		$this->assertSame( 'html', $section['elements'][0]['widgetType'] );
-		$this->assertStringContainsString( '<h1>Hello</h1>', $section['elements'][0]['settings']['html'] );
-		$this->assertSame( 'preserve', $result['report']['mode'] );
-		$this->assertSame( 2, $result['report']['sections'] );
 	}
 
-	public function test_container_applies_background_from_computed_styles(): void {
-		$gen     = new ElementorJsonGenerator();
-		$result  = $gen->generate( RenderResult::from_array( $this->layout() ), array( 'mode' => 'preserve' ) );
-		$section = $result['data'][1];
-		$this->assertSame( 'classic', $section['settings']['background_background'] );
-		$this->assertSame( 'rgb(13, 71, 161)', $section['settings']['background_color'] );
-		$this->assertSame( 400.0, $section['settings']['min_height']['size'] );
-	}
-
-	public function test_widget_mode_converts_single_heading_section(): void {
+	public function test_widget_breakdown_and_components_recorded(): void {
 		$gen    = new ElementorJsonGenerator();
-		$result = $gen->generate( RenderResult::from_array( $this->layout() ), array( 'mode' => 'widgets', 'confidence' => 95 ) );
-
-		// The second section is a single <h2> and should become a heading widget.
-		$this->assertGreaterThanOrEqual( 1, $result['report']['widgets'] );
-		$this->assertSame( 1, $result['report']['widget_breakdown']['heading'] ?? 0 );
-
-		// The multi-element hero section must stay as preserved HTML.
-		$hero = $result['data'][1];
-		$this->assertSame( 'html', $hero['elements'][0]['widgetType'] );
+		$result = $gen->generate( RenderResult::from_array( $this->layout() ), array( 'mode' => 'native' ) );
+		$this->assertSame( 3, $result['report']['widget_breakdown']['heading'] ?? 0 );
+		$this->assertArrayHasKey( 'card', $result['report']['components'] );
 	}
 
-	public function test_detector_rejects_low_confidence_complex_markup(): void {
-		$detector = new WidgetDetector( 95 );
-		$this->assertNull( $detector->detect( '<div><h1>a</h1><p>b</p></div>' ) );
-		$this->assertNull( $detector->detect( '<a href="#">plain link</a>' ) );
+	public function test_css_mapper_typography_and_shadow(): void {
+		$mapper = new CssMapper();
+		$node   = array( 's' => array( 'ff' => '"Montserrat", sans-serif', 'fs' => '48px', 'fw' => 'bold', 'sh' => 'rgba(0, 0, 0, 0.2) 0px 4px 12px 0px' ) );
 
-		$heading = $detector->detect( '<h3>Title</h3>' );
-		$this->assertNotNull( $heading );
+		$typo = $mapper->typography( $node );
+		$this->assertSame( 'custom', $typo['typography_typography'] );
+		$this->assertSame( 'Montserrat', $typo['typography_font_family'] );
+		$this->assertSame( 48.0, $typo['typography_font_size']['size'] );
+		$this->assertSame( '700', $typo['typography_font_weight'] );
+
+		$shadow = $mapper->box_shadow( $node );
+		$this->assertSame( 'yes', $shadow['box_shadow_box_shadow_type'] );
+		$this->assertSame( 4.0, $shadow['box_shadow_box_shadow']['vertical'] );
+		$this->assertSame( 12.0, $shadow['box_shadow_box_shadow']['blur'] );
+	}
+
+	public function test_classifier_fallback_and_components(): void {
+		$classifier = new WidgetClassifier();
+		// Inline SVG becomes a native Image widget (data URI), not an HTML widget.
+		$svg = $classifier->classify( array( 'tag' => 'svg', 'html' => '<svg viewBox="0 0 10 10"><rect/></svg>' ) );
+		$this->assertSame( 'widget', $svg['kind'] );
+		$this->assertSame( 'image', $svg['type'] );
+		// Forms / canvas / tables fall back to HTML (last resort).
+		$this->assertSame( 'fallback', $classifier->classify( array( 'tag' => 'form', 'html' => '<form></form>' ) )['kind'] );
+		$this->assertSame( 'fallback', $classifier->classify( array( 'tag' => 'canvas', 'html' => '<canvas></canvas>' ) )['kind'] );
+
+		$heading = $classifier->classify( array( 'tag' => 'h2', 'text' => 'Title', 'html' => '<h2>Title</h2>' ) );
 		$this->assertSame( 'heading', $heading['type'] );
-		$this->assertSame( 'h3', $heading['settings']['header_size'] );
+
+		// Layered (absolute) children force an HTML fallback for the container.
+		$layered = array(
+			'tag' => 'section', 'cls' => 'page-hero',
+			'children' => array( array( 'tag' => 'div', 's' => array( 'pos' => 'absolute' ) ) ),
+		);
+		$this->assertTrue( $classifier->container_needs_fallback( $layered ) );
 	}
 }

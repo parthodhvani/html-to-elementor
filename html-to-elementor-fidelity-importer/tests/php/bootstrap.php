@@ -26,6 +26,21 @@ if ( ! function_exists( 'wp_rand' ) ) {
 		return random_int( $min, $max );
 	}
 }
+if ( ! function_exists( 'esc_html' ) ) {
+	function esc_html( string $text ): string {
+		return htmlspecialchars( $text, ENT_QUOTES );
+	}
+}
+if ( ! function_exists( 'wp_strip_all_tags' ) ) {
+	function wp_strip_all_tags( string $text ): string {
+		return trim( strip_tags( $text ) );
+	}
+}
+if ( ! function_exists( 'sanitize_html_class' ) ) {
+	function sanitize_html_class( string $class ): string {
+		return preg_replace( '/[^A-Za-z0-9_-]/', '', $class ) ?? '';
+	}
+}
 
 $composer = H2E_PLUGIN_DIR . 'vendor/autoload.php';
 if ( is_readable( $composer ) ) {

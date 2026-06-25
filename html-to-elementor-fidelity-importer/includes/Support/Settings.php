@@ -41,16 +41,21 @@ final class Settings {
 			'node_strip_env'     => true,
 			'node_ld_library_path' => '', // Optional explicit LD_LIBRARY_PATH for Node.
 			// Conversion behaviour.
-			'conversion_mode'    => 'preserve', // "preserve" | "widgets".
+			'conversion_mode'    => 'native',   // "native" (containers + widgets) | "preserve" (raw HTML).
 			'widget_confidence'  => 95,         // Minimum % confidence to convert a node to a widget.
 			'breakpoints'        => array(
-				'desktop' => 1280,
+				'desktop' => 1440,
 				'tablet'  => 768,
-				'mobile'  => 375,
+				'mobile'  => 480,
 			),
 			'wait_until'         => 'networkidle0',
 			'render_timeout_ms'  => 60000,
 			'capture_screenshots'=> true,
+			// Visual reconstruction.
+			'import_media'        => true, // Download images into the media library.
+			'inject_source_assets'=> true, // Re-apply original CSS on imported pages (fidelity safety net).
+			'inject_source_js'    => false, // Re-run original inline scripts (opt-in).
+			'apply_global_colors' => true, // Register extracted brand colours as Elementor globals.
 			'debug'              => false,
 		);
 	}

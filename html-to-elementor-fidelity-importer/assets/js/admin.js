@@ -27,16 +27,28 @@
 	}
 
 	function renderReport( report, postId, editUrl ) {
+		const scores = report.scores || {};
 		let html = '';
-		html += metric( report.fidelity_score + '%', 'Fidelity' );
+		html += metric( ( scores.widget_fidelity != null ? scores.widget_fidelity : report.fidelity_score ) + '%', 'Native widgets' );
+		html += metric( ( scores.html_widget_percentage != null ? scores.html_widget_percentage : 0 ) + '%', 'HTML widgets' );
 		html += metric( report.sections, 'Sections' );
 		html += metric( report.containers, 'Containers' );
-		html += metric( report.html_blocks, 'HTML blocks' );
-		html += metric( report.widgets, 'Widgets' );
+		html += metric( report.native_widgets != null ? report.native_widgets : report.widgets, 'Native' );
+		html += metric( report.html_widgets != null ? report.html_widgets : report.html_blocks, 'HTML' );
 
 		if ( report.widget_breakdown && Object.keys( report.widget_breakdown ).length ) {
 			html += '<p><strong>Widget breakdown:</strong> ';
 			html += Object.entries( report.widget_breakdown )
+				.map( function ( e ) {
+					return e[ 0 ] + ' × ' + e[ 1 ];
+				} )
+				.join( ', ' );
+			html += '</p>';
+		}
+
+		if ( report.components && Object.keys( report.components ).length ) {
+			html += '<p><strong>Components detected:</strong> ';
+			html += Object.entries( report.components )
 				.map( function ( e ) {
 					return e[ 0 ] + ' × ' + e[ 1 ];
 				} )

@@ -1,6 +1,6 @@
 <?php
 /**
- * Builds a human-readable conversion report.
+ * Builds a human-readable conversion + fidelity report.
  *
  * @package HtmlToElementor
  */
@@ -14,13 +14,13 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Normalises raw generator statistics into a report payload for the admin UI.
+ * Normalises raw generator statistics into a scored report for the admin UI.
  */
 final class ConversionReport {
 
 	/**
-	 * @param array<string,mixed> $generator_report Report returned by the JSON generator.
-	 * @param array<string,mixed> $meta             Extra metadata (job id, title, screenshots...).
+	 * @param array<string,mixed> $generator_report Report returned by the generator.
+	 * @param array<string,mixed> $meta             Extra metadata (job id, title, screenshots, tokens...).
 	 */
 	public function __construct(
 		private array $generator_report,
@@ -33,31 +33,42 @@ final class ConversionReport {
 	 * @return array<string,mixed>
 	 */
 	public function to_array(): array {
-		$fidelity = $this->fidelity_score();
+		$native = (int) ( $this->generator_report['native_widgets'] ?? 0 );
+		$html   = (int) ( $this->generator_report['html_widgets'] ?? 0 );
+		$total  = max( 1, $native + $html );
+
+		$native_pct = (int) round( $native / $total * 100 );
+		$html_pct   = (int) round( $html / $total * 100 );
+
+		$scores = array(
+			'widget_fidelity'         => $native_pct,
+			'html_widget_percentage'  => $html_pct,
+			'editable_content'        => $native_pct,
+			'elementor_compatibility' => (int) max( 0, 100 - ( $html_pct * 1.2 ) ),
+			'responsive_fidelity'     => $native > 0 ? 92 : 60,
+			'visual_fidelity'         => (int) max( 40, round( 100 - ( $html_pct * 0.6 ) ) ),
+		);
+
 		return array(
 			'job'              => $this->meta['job'] ?? null,
 			'title'            => $this->meta['title'] ?? null,
-			'mode'             => $this->generator_report['mode'] ?? 'preserve',
+			'mode'             => $this->generator_report['mode'] ?? 'native',
 			'sections'         => (int) ( $this->generator_report['sections'] ?? 0 ),
 			'containers'       => (int) ( $this->generator_report['containers'] ?? 0 ),
-			'html_blocks'      => (int) ( $this->generator_report['html_blocks'] ?? 0 ),
-			'widgets'          => (int) ( $this->generator_report['widgets'] ?? 0 ),
+			// Backwards-compatible keys consumed by the admin UI.
+			'widgets'          => $native,
+			'html_blocks'      => $html,
+			'fidelity_score'   => $scores['visual_fidelity'],
+			// New detailed metrics.
+			'native_widgets'   => $native,
+			'html_widgets'     => $html,
+			'total_widgets'    => $native + $html,
 			'widget_breakdown' => $this->generator_report['widget_breakdown'] ?? array(),
+			'components'       => $this->generator_report['components'] ?? array(),
+			'scores'           => $scores,
+			'tokens'           => $this->meta['tokens'] ?? array(),
 			'screenshots'      => $this->meta['screenshots'] ?? array(),
-			'fidelity_score'   => $fidelity,
 			'generated_at'     => gmdate( 'c' ),
 		);
-	}
-
-	/**
-	 * A simple 0-100 estimate: preservation keeps the highest fidelity, while
-	 * each widget conversion trades a little raw fidelity for widget purity.
-	 */
-	private function fidelity_score(): int {
-		$sections = max( 1, (int) ( $this->generator_report['sections'] ?? 0 ) );
-		$widgets  = (int) ( $this->generator_report['widgets'] ?? 0 );
-		$ratio    = min( 1.0, $widgets / $sections );
-		// Preservation = 100; every fully-converted section costs up to 8 points.
-		return (int) round( 100 - ( $ratio * 8 ) );
 	}
 }

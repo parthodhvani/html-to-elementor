@@ -5,8 +5,10 @@
  *
  * Loads a source HTML page in headless Chromium, waits for fonts / images /
  * network idle, then extracts:
- *   - the segmented top-level sections (outerHTML + computed styles + box model)
- *   - per-breakpoint (desktop / tablet / mobile) computed values
+ *   - the segmented top-level sections, each with a recursive DOM `tree`
+ *     annotated with the full computed style set (typography, spacing,
+ *     background, border, shadow, sizing, flex/grid layout)
+ *   - per-node responsive values (tablet / mobile) for responsive fidelity
  *   - inlined CSS and JS assets
  *   - full-page screenshots per breakpoint
  *
@@ -21,11 +23,11 @@ const puppeteer = require('puppeteer');
 const { browserPageSegmenter } = require('./segmenter');
 
 const DEFAULT_CONFIG = {
-  breakpoints: { desktop: 1280, tablet: 768, mobile: 375 },
+  breakpoints: { desktop: 1440, tablet: 768, mobile: 480 },
   waitUntil: 'networkidle0',
   timeout: 60000,
   captureScreenshots: true,
-  conversionMode: 'preserve',
+  conversionMode: 'native',
   widgetConfidence: 95,
   debug: false,
 };
@@ -33,8 +35,8 @@ const DEFAULT_CONFIG = {
 /**
  * Render and extract a layout document from an HTML entry file.
  *
- * @param {string} inputPath Absolute path to the entry .html file.
- * @param {string} outDir    Directory for screenshots and artifacts.
+ * @param {string} inputPath  Absolute path to the entry .html file.
+ * @param {string} outDir     Directory for screenshots and artifacts.
  * @param {object} userConfig Partial configuration overrides.
  * @returns {Promise<object>} The layout document.
  */
@@ -78,40 +80,42 @@ async function renderToLayout(inputPath, outDir, userConfig = {}) {
     }));
 
     const assets = await page.evaluate(extractAssetsInPage);
-
-    // Segment sections and tag them so we can re-measure across breakpoints.
     let sections = await page.evaluate(browserPageSegmenter);
 
-    const responsive = { desktop: indexBySection(sections) };
+    const sectionResponsive = { desktop: indexBySection(sections) };
+    const uidMaps = {};
     const screenshots = {};
 
     if (config.captureScreenshots) {
       screenshots.desktop = await screenshot(page, outDir, 'desktop');
     }
 
-    // Tablet + mobile passes — re-measure tagged sections only.
+    // Tablet + mobile passes — re-measure tagged sections and nodes.
     for (const device of ['tablet', 'mobile']) {
       const width = config.breakpoints[device];
       if (!width) continue;
       await page.setViewport({ width, height: 900, deviceScaleFactor: 1 });
       await sleep(350);
       await waitForStable(page, config);
-      responsive[device] = await page.evaluate(measureTaggedSections);
+      sectionResponsive[device] = await page.evaluate(measureTaggedSections);
+      uidMaps[device] = await page.evaluate(measureUids);
       if (config.captureScreenshots) {
         screenshots[device] = await screenshot(page, outDir, device);
       }
     }
 
-    // Merge responsive measurements back into each section.
+    // Merge responsive measurements back into sections and their trees.
     sections = sections.map((section) => {
-      const idx = section.index;
+      attachNodeResponsive(section.tree, uidMaps);
+      stripTreeMarkers(section.tree);
       return {
         ...section,
         responsive: {
-          desktop: responsive.desktop[idx] || null,
-          tablet: (responsive.tablet || {})[idx] || null,
-          mobile: (responsive.mobile || {})[idx] || null,
+          desktop: sectionResponsive.desktop[section.index] || null,
+          tablet: (sectionResponsive.tablet || {})[section.index] || null,
+          mobile: (sectionResponsive.mobile || {})[section.index] || null,
         },
+        html: (section.html || '').replace(/\sdata-h2e-(section|uid)="\d+"/g, ''),
       };
     });
 
@@ -120,7 +124,7 @@ async function renderToLayout(inputPath, outDir, userConfig = {}) {
       breakpoints: config.breakpoints,
       screenshots,
       assets,
-      sections: sections.map(stripMarkers),
+      sections,
     };
   } finally {
     await browser.close();
@@ -188,25 +192,42 @@ function indexBySection(sections) {
 }
 
 /**
- * Remove our internal marker attribute from captured HTML.
+ * Attach tablet/mobile measurements to each tree node by its uid.
  *
- * @param {object} section Section.
- * @returns {object}
+ * @param {object|null}            node    Tree node.
+ * @param {Object<string,object>}  uidMaps Per-device uid measurement maps.
  */
-function stripMarkers(section) {
-  return {
-    ...section,
-    html: (section.html || '').replace(/\sdata-h2e-section="\d+"/g, ''),
-  };
+function attachNodeResponsive(node, uidMaps) {
+  if (!node) return;
+  if (node.uid !== undefined) {
+    const r = {};
+    if (uidMaps.tablet && uidMaps.tablet[node.uid]) r.tablet = uidMaps.tablet[node.uid];
+    if (uidMaps.mobile && uidMaps.mobile[node.uid]) r.mobile = uidMaps.mobile[node.uid];
+    if (Object.keys(r).length) node.r = r;
+  }
+  (node.children || []).forEach((c) => attachNodeResponsive(c, uidMaps));
+}
+
+/**
+ * Remove internal marker attributes from captured HTML and slim the tree.
+ *
+ * @param {object|null} node Tree node.
+ */
+function stripTreeMarkers(node) {
+  if (!node) return;
+  if (typeof node.html === 'string') {
+    node.html = node.html.replace(/\sdata-h2e-(section|uid)="\d+"/g, '');
+  }
+  delete node.uid;
+  (node.children || []).forEach(stripTreeMarkers);
 }
 
 /* ----------------------------------------------------------------------------
- * In-page (browser context) helpers. These run inside Chromium via evaluate().
+ * In-page (browser context) helpers.
  * ------------------------------------------------------------------------- */
 
 /**
  * Collect inlined CSS/JS assets from the rendered document.
- * Executed in the browser context.
  *
  * @returns {object}
  */
@@ -225,7 +246,6 @@ function extractAssetsInPage() {
         stylesheets.push(sheet.href);
       }
     } catch (e) {
-      // Cross-origin sheet whose rules cannot be read: keep its href.
       if (sheet.href) stylesheets.push(sheet.href);
     }
   }
@@ -245,7 +265,6 @@ function extractAssetsInPage() {
 
 /**
  * Re-measure previously tagged sections at the current viewport.
- * Executed in the browser context.
  *
  * @returns {Object<number,object>}
  */
@@ -267,6 +286,30 @@ function measureTaggedSections() {
     out[idx] = {
       bbox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       styles,
+    };
+  });
+  return out;
+}
+
+/**
+ * Re-measure every uid-tagged node at the current viewport (responsive pass).
+ *
+ * @returns {Object<string,object>}
+ */
+function measureUids() {
+  const out = {};
+  document.querySelectorAll('[data-h2e-uid]').forEach((el) => {
+    const cs = window.getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+    out[el.getAttribute('data-h2e-uid')] = {
+      fs: cs.fontSize,
+      mt: cs.marginTop, mr: cs.marginRight, mb: cs.marginBottom, ml: cs.marginLeft,
+      pt: cs.paddingTop, pr: cs.paddingRight, pb: cs.paddingBottom, pl: cs.paddingLeft,
+      ta: cs.textAlign,
+      disp: cs.display,
+      fd: cs.flexDirection,
+      w: Math.round(r.width * 100) / 100,
+      h: Math.round(r.height * 100) / 100,
     };
   });
   return out;

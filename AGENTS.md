@@ -76,5 +76,21 @@ Gotchas learned:
 - The SQLite integration plugin must be installed via `curl`+`unzip` BEFORE `wp core install`,
   because `wp plugin install` itself needs a working DB connection.
 - The plugin spawns `node` via `proc_open`; `node` must be on the PATH of the PHP/WP-CLI process.
+  Under XAMPP/LAMPP the spawned Node is sanitised (LD_LIBRARY_PATH stripped) — see ChromiumService.
 - Imported pages use the `elementor_canvas` template and store data in `_elementor_data`. Elementor
-  renders the containers + HTML widgets on the frontend automatically once Elementor is active.
+  renders the containers + native widgets on the frontend automatically once Elementor is active.
+
+Native reconstruction engine notes:
+
+- `conversion_mode` defaults to `native` (nested containers + native widgets). It is only applied
+  to NEW installs; on an existing install the stored option is preserved, so to switch an existing
+  site run: `wp eval '$s=(array)get_option("h2e_settings"); $s["conversion_mode"]="native"; update_option("h2e_settings",$s);'`.
+- Layout fidelity relies on Elementor's flex container model. Flex/grid rows get measured
+  PERCENTAGE-width columns and an explicit `flex_gap` (0 when the source has none) — Elementor's
+  default container gap otherwise wraps percentage columns onto new lines.
+- The source stylesheet is re-applied on the front end (post meta `_h2e_source_css`, output by
+  `Frontend`). Widgets also carry `_css_classes`/`_element_id`; note some Elementor builds do not
+  render container CSS classes, so visual fidelity is driven primarily by mapped controls.
+- Visual check: render original + imported screenshots and run
+  `node chromium-service/compare.js <original.png> <generated.png>` (the score is sensitive to
+  total page-height differences, so treat it as indicative and rely on side-by-side screenshots).

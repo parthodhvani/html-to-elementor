@@ -5,7 +5,39 @@ Import arbitrary HTML/CSS/JS pages into [Elementor](https://elementor.com/) whil
 (via a bundled Node.js / Puppeteer service), extracts the computed layout, segments it into
 visual sections and generates valid Elementor container data.
 
-> Primary objective: **Rendered Browser Fidelity > Elementor Widget Purity.**
+> Primary objective: **Visual fidelity + native, editable Elementor structure.**
+
+## Visual reconstruction engine
+
+By default (`conversion_mode = native`) the importer rebuilds each page as **nested
+Elementor containers and native widgets**, not HTML blocks:
+
+* **Full computed-CSS extraction** (Chromium): typography, spacing, background, border,
+  shadow, sizing, flex/grid layout and position — per node, with tablet/mobile responsive
+  values. See `chromium-service/lib/segmenter.js`.
+* **Component recognition** (`includes/Elementor/WidgetClassifier.php`): headings → Heading,
+  `<p>` → Text Editor, `<img>` → Image, buttons/`.btn`/`a` → Button, `<ul>`/`<ol>` → Icon List,
+  `<hr>` → Divider, font icons → Icon, inline SVG → Image (data URI), YouTube/Vimeo → Video,
+  Google Maps → Map. Detects header/nav/hero/cta/card/feature/testimonial/faq/pricing roles.
+* **CSS → Elementor controls** (`includes/Elementor/CssMapper.php`): computed styles become
+  native typography / spacing / background / border / shadow / flex controls (responsive),
+  instead of inline HTML.
+* **Layout reconstruction** (`includes/Elementor/LayoutTreeConverter.php`): flex/grid rows
+  become row containers with measured percentage-width columns; nested structure is preserved.
+* **Design tokens** (`includes/Elementor/DesignTokens.php`): a brand palette + heading/body
+  fonts are extracted and registered as Elementor global colours.
+* **Media handling**: images and background images are downloaded into the Media Library and
+  URLs are rewritten to attachments (`includes/Elementor/ImportEngine.php`).
+* **Fidelity safety net**: the original stylesheet is re-applied on imported pages via
+  `includes/Frontend/Frontend.php` (no HTML widget), and widgets keep their original CSS
+  classes/ids in the Advanced tab.
+* **HTML widgets are a last resort** — only for layered/absolute designs, third-party sliders,
+  forms, canvas and tables. Typical pages convert to **>95% native widgets**.
+* **Visual validation**: `chromium-service/compare.js` scores similarity between the original
+  and generated screenshots.
+
+Set `conversion_mode = preserve` to fall back to the original "one HTML widget per section"
+behaviour.
 
 ## Pipeline
 

@@ -48,7 +48,7 @@ final class ConversionPipeline {
 		$generated = $this->generator->generate(
 			$result,
 			array(
-				'mode'       => $settings['conversion_mode'] ?? 'preserve',
+				'mode'       => $settings['conversion_mode'] ?? 'native',
 				'confidence' => (int) ( $settings['widget_confidence'] ?? 95 ),
 			)
 		);
@@ -59,6 +59,7 @@ final class ConversionPipeline {
 				'job'         => basename( $job_dir ),
 				'title'       => $result->title(),
 				'screenshots' => $result->screenshots(),
+				'tokens'      => $generated['tokens'] ?? array(),
 			)
 		) )->to_array();
 
@@ -66,6 +67,8 @@ final class ConversionPipeline {
 			'data'   => $generated['data'],
 			'report' => $report,
 			'result' => $result,
+			'tokens' => $generated['tokens'] ?? array(),
+			'assets' => $generated['assets'] ?? array(),
 		);
 	}
 
@@ -82,9 +85,12 @@ final class ConversionPipeline {
 		$post_id   = ( new ImportEngine() )->import(
 			$converted['data'],
 			array(
-				'title'   => $args['title'] ?? ( $converted['report']['title'] ?: 'Imported Page' ),
-				'status'  => $args['status'] ?? 'draft',
-				'page_id' => (int) ( $args['page_id'] ?? 0 ),
+				'title'    => $args['title'] ?? ( $converted['report']['title'] ?: 'Imported Page' ),
+				'status'   => $args['status'] ?? 'draft',
+				'page_id'  => (int) ( $args['page_id'] ?? 0 ),
+				'assets'   => $converted['assets'] ?? array(),
+				'tokens'   => $converted['tokens'] ?? array(),
+				'base_dir' => dirname( $entry_html ),
 			)
 		);
 

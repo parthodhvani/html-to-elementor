@@ -12,6 +12,7 @@ namespace HtmlToElementor;
 use HtmlToElementor\Admin\AdminPage;
 use HtmlToElementor\Rest\RestController;
 use HtmlToElementor\Cli\ConvertCommand;
+use HtmlToElementor\Frontend\Frontend;
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
@@ -54,6 +55,8 @@ final class Plugin {
 		}
 
 		add_action( 'rest_api_init', array( new RestController(), 'register_routes' ) );
+
+		( new Frontend() )->register();
 
 		if ( defined( 'WP_CLI' ) && WP_CLI ) {
 			\WP_CLI::add_command( 'h2e', ConvertCommand::class );
