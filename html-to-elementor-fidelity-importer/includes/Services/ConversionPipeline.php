@@ -11,6 +11,7 @@ namespace HtmlToElementor\Services;
 
 use HtmlToElementor\Elementor\ElementorJsonGenerator;
 use HtmlToElementor\Elementor\ImportEngine;
+use HtmlToElementor\Engine\Reconstruction\VisualReconstructionEngine;
 use HtmlToElementor\Report\ConversionReport;
 use HtmlToElementor\Support\Settings;
 
@@ -45,13 +46,19 @@ final class ConversionPipeline {
 		$settings = array_merge( Settings::all(), $overrides );
 		$result   = $this->chromium->render( $entry_html, $job_dir, $settings );
 
-		$generated = $this->generator->generate(
-			$result,
-			array(
-				'mode'       => $settings['conversion_mode'] ?? 'preserve',
-				'confidence' => (int) ( $settings['widget_confidence'] ?? 95 ),
-			)
+		$mode = (string) ( $settings['conversion_mode'] ?? 'preserve' );
+		$opts = array(
+			'mode'                  => $mode,
+			'confidence'            => (int) ( $settings['widget_confidence'] ?? 90 ),
+			'fidelity_threshold'    => (float) ( $settings['fidelity_threshold'] ?? 95 ),
+			'max_repair_iterations' => (int) ( $settings['max_repair_iterations'] ?? 3 ),
 		);
+
+		if ( 'reconstruct' === $mode ) {
+			$generated = ( new VisualReconstructionEngine() )->generate( $result, $opts );
+		} else {
+			$generated = $this->generator->generate( $result, $opts );
+		}
 
 		$report = ( new ConversionReport(
 			$generated['report'],

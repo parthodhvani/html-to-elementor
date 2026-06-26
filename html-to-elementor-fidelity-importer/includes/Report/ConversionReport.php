@@ -34,30 +34,49 @@ final class ConversionReport {
 	 */
 	public function to_array(): array {
 		$fidelity = $this->fidelity_score();
+		$widgets  = (int) ( $this->generator_report['widgets'] ?? 0 );
+		$html     = (int) ( $this->generator_report['html_blocks'] ?? 0 );
+		$total    = max( 1, $widgets + $html );
+
 		return array(
-			'job'              => $this->meta['job'] ?? null,
-			'title'            => $this->meta['title'] ?? null,
-			'mode'             => $this->generator_report['mode'] ?? 'preserve',
-			'sections'         => (int) ( $this->generator_report['sections'] ?? 0 ),
-			'containers'       => (int) ( $this->generator_report['containers'] ?? 0 ),
-			'html_blocks'      => (int) ( $this->generator_report['html_blocks'] ?? 0 ),
-			'widgets'          => (int) ( $this->generator_report['widgets'] ?? 0 ),
-			'widget_breakdown' => $this->generator_report['widget_breakdown'] ?? array(),
-			'screenshots'      => $this->meta['screenshots'] ?? array(),
-			'fidelity_score'   => $fidelity,
-			'generated_at'     => gmdate( 'c' ),
+			'job'                   => $this->meta['job'] ?? null,
+			'title'                 => $this->meta['title'] ?? null,
+			'mode'                  => $this->generator_report['mode'] ?? 'preserve',
+			'engine_version'        => (int) ( $this->generator_report['engine_version'] ?? 1 ),
+			'sections'              => (int) ( $this->generator_report['sections'] ?? 0 ),
+			'containers'            => (int) ( $this->generator_report['containers'] ?? 0 ),
+			'html_blocks'           => $html,
+			'widgets'               => $widgets,
+			'widget_breakdown'      => $this->generator_report['widget_breakdown'] ?? array(),
+			'screenshots'           => $this->meta['screenshots'] ?? array(),
+			'fidelity_score'        => $fidelity,
+			'visual_fidelity'       => $this->generator_report['visual_fidelity'] ?? $fidelity,
+			'layout_score'          => $this->generator_report['layout_score'] ?? null,
+			'typography_score'      => $this->generator_report['typography_score'] ?? null,
+			'spacing_score'         => $this->generator_report['spacing_score'] ?? null,
+			'overall_fidelity'      => $this->generator_report['overall_fidelity'] ?? $fidelity,
+			'widget_coverage'       => $this->generator_report['widget_coverage'] ?? round( ( $widgets / $total ) * 100, 2 ),
+			'native_widget_percent' => $this->generator_report['native_widget_percent'] ?? round( ( $widgets / $total ) * 100, 2 ),
+			'html_widget_percent'   => $this->generator_report['html_widget_percent'] ?? round( ( $html / $total ) * 100, 2 ),
+			'missing_assets'        => $this->generator_report['missing_assets'] ?? array(),
+			'unsupported_css'       => $this->generator_report['unsupported_css'] ?? array(),
+			'repair_iterations'     => (int) ( $this->generator_report['repair_iterations'] ?? 0 ),
+			'design_tokens'         => $this->generator_report['design_tokens'] ?? null,
+			'generated_at'          => gmdate( 'c' ),
 		);
 	}
 
 	/**
-	 * A simple 0-100 estimate: preservation keeps the highest fidelity, while
-	 * each widget conversion trades a little raw fidelity for widget purity.
+	 * A 0-100 fidelity estimate. Reconstruct mode uses validation metrics when present.
 	 */
 	private function fidelity_score(): int {
+		if ( isset( $this->generator_report['overall_fidelity'] ) ) {
+			return (int) round( (float) $this->generator_report['overall_fidelity'] );
+		}
+
 		$sections = max( 1, (int) ( $this->generator_report['sections'] ?? 0 ) );
 		$widgets  = (int) ( $this->generator_report['widgets'] ?? 0 );
 		$ratio    = min( 1.0, $widgets / $sections );
-		// Preservation = 100; every fully-converted section costs up to 8 points.
 		return (int) round( 100 - ( $ratio * 8 ) );
 	}
 }

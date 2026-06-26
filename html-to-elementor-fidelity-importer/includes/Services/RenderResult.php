@@ -74,4 +74,47 @@ final class RenderResult {
 	public function assets(): array {
 		return is_array( $this->data['assets'] ?? null ) ? $this->data['assets'] : array();
 	}
+
+	/**
+	 * Engine version (1 = legacy, 2 = visual reconstruction).
+	 */
+	public function version(): int {
+		return (int) ( $this->data['version'] ?? 1 );
+	}
+
+	/**
+	 * Full visual tree from Chromium extraction.
+	 *
+	 * @return array<string,mixed>
+	 */
+	public function visual_tree(): array {
+		return is_array( $this->data['visualTree'] ?? null ) ? $this->data['visualTree'] : array();
+	}
+
+	/**
+	 * Semantic layout graph.
+	 *
+	 * @return array<string,mixed>
+	 */
+	public function layout_graph(): array {
+		return is_array( $this->data['layoutGraph'] ?? null ) ? $this->data['layoutGraph'] : array();
+	}
+
+	/**
+	 * Extracted design tokens.
+	 *
+	 * @return array<string,mixed>
+	 */
+	public function design_tokens(): array {
+		return is_array( $this->data['designTokens'] ?? null ) ? $this->data['designTokens'] : array();
+	}
+
+	/**
+	 * Extraction statistics.
+	 *
+	 * @return array<string,mixed>
+	 */
+	public function stats(): array {
+		return is_array( $this->data['stats'] ?? null ) ? $this->data['stats'] : array();
+	}
 }
