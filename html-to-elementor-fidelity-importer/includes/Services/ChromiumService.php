@@ -180,13 +180,16 @@ final class ChromiumService {
 	 */
 	private function config_payload( array $settings ): array {
 		return array(
-			'breakpoints'        => $settings['breakpoints'] ?? array(),
-			'waitUntil'          => $settings['wait_until'] ?? 'networkidle0',
-			'timeout'            => (int) ( $settings['render_timeout_ms'] ?? 60000 ),
-			'captureScreenshots' => (bool) ( $settings['capture_screenshots'] ?? true ),
-			'conversionMode'     => $settings['conversion_mode'] ?? 'preserve',
-			'widgetConfidence'   => (int) ( $settings['widget_confidence'] ?? 95 ),
-			'debug'              => (bool) ( $settings['debug'] ?? false ),
+			'breakpoints'          => $settings['breakpoints'] ?? array(),
+			'waitUntil'            => $settings['wait_until'] ?? 'networkidle0',
+			'timeout'              => (int) ( $settings['render_timeout_ms'] ?? 60000 ),
+			'captureScreenshots'   => (bool) ( $settings['capture_screenshots'] ?? true ),
+			'conversionMode'       => $settings['conversion_mode'] ?? 'preserve',
+			'widgetConfidence'     => (int) ( $settings['widget_confidence'] ?? 90 ),
+			'fidelityThreshold'    => (float) ( $settings['fidelity_threshold'] ?? 95 ),
+			'maxRepairIterations'  => (int) ( $settings['max_repair_iterations'] ?? 3 ),
+			'engineVersion'        => (int) ( $settings['engine_version'] ?? 2 ),
+			'debug'                => (bool) ( $settings['debug'] ?? false ),
 		);
 	}
 

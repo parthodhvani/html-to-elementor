@@ -26,6 +26,16 @@ if ( ! function_exists( 'wp_rand' ) ) {
 		return random_int( $min, $max );
 	}
 }
+if ( ! function_exists( 'wp_strip_all_tags' ) ) {
+	function wp_strip_all_tags( string $text ): string {
+		return strip_tags( $text );
+	}
+}
+if ( ! function_exists( 'esc_attr' ) ) {
+	function esc_attr( string $text ): string {
+		return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
+	}
+}
 
 $composer = H2E_PLUGIN_DIR . 'vendor/autoload.php';
 if ( is_readable( $composer ) ) {

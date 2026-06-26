@@ -103,7 +103,7 @@ final class ElementorJsonGenerator {
 	 *
 	 * @param array<string,mixed> $assets Asset bundle from the renderer.
 	 */
-	private function build_asset_block( array $assets ): string {
+	public function build_asset_block( array $assets ): string {
 		$out = '';
 
 		foreach ( (array) ( $assets['stylesheets'] ?? array() ) as $href ) {

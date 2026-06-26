@@ -24,18 +24,29 @@ if ( ! function_exists( 'wp_rand' ) ) {
 		return random_int( $min, $max );
 	}
 }
+if ( ! function_exists( 'esc_attr' ) ) {
+	function esc_attr( string $text ): string {
+		return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
+	}
+}
+if ( ! function_exists( 'wp_strip_all_tags' ) ) {
+	function wp_strip_all_tags( string $text ): string {
+		return strip_tags( $text );
+	}
+}
 
 require H2E_PLUGIN_DIR . 'includes/Support/Autoloader.php';
 \HtmlToElementor\Support\Autoloader::register();
 
 use HtmlToElementor\Services\RenderResult;
 use HtmlToElementor\Elementor\ElementorJsonGenerator;
+use HtmlToElementor\Engine\Reconstruction\VisualReconstructionEngine;
 
 $layout_path = $argv[1] ?? '';
 $mode        = $argv[2] ?? 'preserve';
 
 if ( '' === $layout_path || ! is_readable( $layout_path ) ) {
-	fwrite( STDERR, "Usage: php tests/harness.php <layout.json> [preserve|widgets]\n" );
+	fwrite( STDERR, "Usage: php tests/harness.php <layout.json> [preserve|widgets|reconstruct]\n" );
 	exit( 2 );
 }
 
@@ -46,8 +57,8 @@ if ( ! is_array( $layout ) ) {
 }
 
 $result    = RenderResult::from_array( $layout );
-$generator = new ElementorJsonGenerator();
-$generated = $generator->generate( $result, array( 'mode' => $mode, 'confidence' => 95 ) );
+$generator = 'reconstruct' === $mode ? new VisualReconstructionEngine() : new ElementorJsonGenerator();
+$generated = $generator->generate( $result, array( 'mode' => $mode, 'confidence' => 90, 'fidelity_threshold' => 50 ) );
 
 // Validate the generated structure looks like Elementor data.
 $errors = array();

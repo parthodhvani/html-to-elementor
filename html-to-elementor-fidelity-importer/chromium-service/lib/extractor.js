@@ -1,16 +1,12 @@
 'use strict';
 
 /**
- * Chromium rendering + extraction engine.
+ * Chromium rendering + visual extraction engine (v2).
  *
- * Loads a source HTML page in headless Chromium, waits for fonts / images /
- * network idle, then extracts:
- *   - the segmented top-level sections (outerHTML + computed styles + box model)
- *   - per-breakpoint (desktop / tablet / mobile) computed values
- *   - inlined CSS and JS assets
- *   - full-page screenshots per breakpoint
+ * Pipeline:
+ *   Rendered Page -> Visual Tree -> Layout Graph -> Sections (compat)
  *
- * The Chromium-rendered output is treated as the source of truth.
+ * DOM is supporting metadata; visual geometry and computed styles are primary.
  */
 
 const fs = require('fs');
@@ -18,20 +14,42 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const puppeteer = require('puppeteer');
 
+const { browserVisualExtractor } = require('./visual-extractor');
+const { eliminateWrappers, countRemoved } = require('./wrapper-eliminator');
+const { buildLayoutGraph } = require('./layout-graph');
+const { extractDesignTokens } = require('./design-token-extractor');
 const { browserPageSegmenter } = require('./segmenter');
 
+const RESPONSIVE_WIDTHS = {
+  w1920: 1920,
+  w1440: 1440,
+  w1280: 1280,
+  w1024: 1024,
+  w768: 768,
+  w480: 480,
+  w375: 375,
+};
+
 const DEFAULT_CONFIG = {
-  breakpoints: { desktop: 1280, tablet: 768, mobile: 375 },
+  breakpoints: {
+    desktop: 1280,
+    tablet: 768,
+    mobile: 375,
+    ...RESPONSIVE_WIDTHS,
+  },
   waitUntil: 'networkidle0',
   timeout: 60000,
   captureScreenshots: true,
   conversionMode: 'preserve',
   widgetConfidence: 95,
+  fidelityThreshold: 95,
+  maxRepairIterations: 3,
   debug: false,
+  engineVersion: 2,
 };
 
 /**
- * Render and extract a layout document from an HTML entry file.
+ * Render and extract a v2 layout document from an HTML entry file.
  *
  * @param {string} inputPath Absolute path to the entry .html file.
  * @param {string} outDir    Directory for screenshots and artifacts.
@@ -64,9 +82,9 @@ async function renderToLayout(inputPath, outDir, userConfig = {}) {
     page.setDefaultTimeout(config.timeout);
 
     const fileUrl = pathToFileURL(inputPath).href;
+    const desktopWidth = config.breakpoints.desktop || 1280;
 
-    // Desktop pass — full extraction + segmentation.
-    await page.setViewport({ width: config.breakpoints.desktop, height: 900, deviceScaleFactor: 1 });
+    await page.setViewport({ width: desktopWidth, height: 900, deviceScaleFactor: 1 });
     await page.goto(fileUrl, { waitUntil: config.waitUntil, timeout: config.timeout });
     await waitForStable(page, config);
 
@@ -79,8 +97,21 @@ async function renderToLayout(inputPath, outDir, userConfig = {}) {
 
     const assets = await page.evaluate(extractAssetsInPage);
 
-    // Segment sections and tag them so we can re-measure across breakpoints.
-    let sections = await page.evaluate(browserPageSegmenter);
+    // v2: Full visual tree extraction.
+    let visualTree = await page.evaluate(browserVisualExtractor);
+    const wrappersRemoved = countRemoved(visualTree.root, eliminateWrappers(visualTree.root).root);
+    visualTree = {
+      ...visualTree,
+      root: eliminateWrappers(visualTree.root),
+      wrappersRemoved,
+    };
+
+    const layoutGraph = buildLayoutGraph(visualTree);
+    const designTokens = extractDesignTokens(visualTree);
+
+    // Backward-compatible section tagging for responsive re-measurement.
+    let sections = layoutGraph.sections;
+    await page.evaluate(tagSectionsFromGraph, sections.map((s) => s.graphId));
 
     const responsive = { desktop: indexBySection(sections) };
     const screenshots = {};
@@ -89,56 +120,57 @@ async function renderToLayout(inputPath, outDir, userConfig = {}) {
       screenshots.desktop = await screenshot(page, outDir, 'desktop');
     }
 
-    // Tablet + mobile passes — re-measure tagged sections only.
-    for (const device of ['tablet', 'mobile']) {
+    const measureKeys = ['tablet', 'mobile', 'w1920', 'w1440', 'w1024', 'w768', 'w480', 'w375'];
+    for (const device of measureKeys) {
       const width = config.breakpoints[device];
       if (!width) continue;
       await page.setViewport({ width, height: 900, deviceScaleFactor: 1 });
-      await sleep(350);
+      await sleep(300);
       await waitForStable(page, config);
       responsive[device] = await page.evaluate(measureTaggedSections);
-      if (config.captureScreenshots) {
+      if (config.captureScreenshots && ['tablet', 'mobile', 'w768', 'w375'].includes(device)) {
         screenshots[device] = await screenshot(page, outDir, device);
       }
     }
 
-    // Merge responsive measurements back into each section.
     sections = sections.map((section) => {
       const idx = section.index;
-      return {
-        ...section,
-        responsive: {
-          desktop: responsive.desktop[idx] || null,
-          tablet: (responsive.tablet || {})[idx] || null,
-          mobile: (responsive.mobile || {})[idx] || null,
-        },
-      };
+      const resp = { desktop: responsive.desktop[idx] || null };
+      for (const device of measureKeys) {
+        resp[device] = (responsive[device] || {})[idx] || null;
+      }
+      return { ...section, responsive: resp };
     });
 
+    // Legacy segmenter output for preserve-mode regression tests.
+    const legacySections = await page.evaluate(browserPageSegmenter);
+
     return {
-      meta: { ...meta, generatedAt: new Date().toISOString() },
+      version: 2,
+      meta: { ...meta, generatedAt: new Date().toISOString(), engineVersion: 2 },
       breakpoints: config.breakpoints,
       screenshots,
       assets,
-      sections: sections.map(stripMarkers),
+      visualTree,
+      layoutGraph,
+      designTokens,
+      sections,
+      legacySections: legacySections.map(stripMarkers),
+      stats: {
+        nodeCount: visualTree.nodeCount,
+        wrappersRemoved,
+        regionCount: layoutGraph.stats?.totalRegions || 0,
+      },
     };
   } finally {
     await browser.close();
   }
 }
 
-/**
- * Wait for fonts and images to settle in addition to the navigation wait.
- *
- * @param {import('puppeteer').Page} page   Page.
- * @param {object}                   config Config.
- */
 async function waitForStable(page, config) {
   try {
     await page.evaluate(async () => {
-      if (document.fonts && document.fonts.ready) {
-        await document.fonts.ready;
-      }
+      if (document.fonts && document.fonts.ready) await document.fonts.ready;
       const imgs = Array.from(document.images || []);
       await Promise.all(
         imgs.map((img) =>
@@ -152,33 +184,16 @@ async function waitForStable(page, config) {
       );
     });
   } catch (e) {
-    if (config.debug) {
-      // eslint-disable-next-line no-console
-      console.error('waitForStable warning:', e.message);
-    }
+    if (config.debug) console.error('waitForStable warning:', e.message);
   }
 }
 
-/**
- * Capture a full-page screenshot.
- *
- * @param {import('puppeteer').Page} page   Page.
- * @param {string}                   outDir Output dir.
- * @param {string}                   device Device label.
- * @returns {Promise<string>} Absolute path to the PNG.
- */
 async function screenshot(page, outDir, device) {
   const file = path.join(outDir, `shot-${device}.png`);
   await page.screenshot({ path: file, fullPage: true });
   return file;
 }
 
-/**
- * Build an index map { sectionIndex: measurement } from segmented sections.
- *
- * @param {Array<object>} sections Sections.
- * @returns {Object<number,object>}
- */
 function indexBySection(sections) {
   const out = {};
   for (const s of sections) {
@@ -187,12 +202,6 @@ function indexBySection(sections) {
   return out;
 }
 
-/**
- * Remove our internal marker attribute from captured HTML.
- *
- * @param {object} section Section.
- * @returns {object}
- */
 function stripMarkers(section) {
   return {
     ...section,
@@ -200,60 +209,37 @@ function stripMarkers(section) {
   };
 }
 
-/* ----------------------------------------------------------------------------
- * In-page (browser context) helpers. These run inside Chromium via evaluate().
- * ------------------------------------------------------------------------- */
+function sleep(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
 
-/**
- * Collect inlined CSS/JS assets from the rendered document.
- * Executed in the browser context.
- *
- * @returns {object}
- */
 function extractAssetsInPage() {
   const stylesheets = [];
   let combinedCss = '';
-
   for (const sheet of Array.from(document.styleSheets)) {
     try {
       const rules = sheet.cssRules;
       if (rules) {
-        for (const rule of Array.from(rules)) {
-          combinedCss += rule.cssText + '\n';
-        }
-      } else if (sheet.href) {
-        stylesheets.push(sheet.href);
-      }
+        for (const rule of Array.from(rules)) combinedCss += rule.cssText + '\n';
+      } else if (sheet.href) stylesheets.push(sheet.href);
     } catch (e) {
-      // Cross-origin sheet whose rules cannot be read: keep its href.
       if (sheet.href) stylesheets.push(sheet.href);
     }
   }
-
   let combinedJs = '';
   const scripts = [];
   for (const script of Array.from(document.querySelectorAll('script'))) {
-    if (script.src) {
-      scripts.push(script.src);
-    } else if (script.textContent && script.textContent.trim()) {
-      combinedJs += script.textContent + '\n';
-    }
+    if (script.src) scripts.push(script.src);
+    else if (script.textContent && script.textContent.trim()) combinedJs += script.textContent + '\n';
   }
-
   return { stylesheets, combinedCss, scripts, combinedJs };
 }
 
-/**
- * Re-measure previously tagged sections at the current viewport.
- * Executed in the browser context.
- *
- * @returns {Object<number,object>}
- */
 function measureTaggedSections() {
   const props = [
     'display', 'backgroundColor', 'color', 'paddingTop', 'paddingBottom',
     'paddingLeft', 'paddingRight', 'marginTop', 'marginBottom',
-    'flexDirection', 'justifyContent', 'alignItems', 'textAlign', 'fontSize',
+    'flexDirection', 'justifyContent', 'alignItems', 'textAlign', 'fontSize', 'gap',
   ];
   const out = {};
   document.querySelectorAll('[data-h2e-section]').forEach((el) => {
@@ -261,9 +247,7 @@ function measureTaggedSections() {
     const rect = el.getBoundingClientRect();
     const cs = window.getComputedStyle(el);
     const styles = {};
-    props.forEach((p) => {
-      styles[p] = cs[p];
-    });
+    props.forEach((p) => { styles[p] = cs[p]; });
     out[idx] = {
       bbox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
       styles,
@@ -273,13 +257,17 @@ function measureTaggedSections() {
 }
 
 /**
- * Sleep helper (Node context).
+ * Tag section elements by visual node id for responsive re-measurement.
  *
- * @param {number} ms Milliseconds.
- * @returns {Promise<void>}
+ * @param {Array<string>} graphIds Visual node IDs.
  */
-function sleep(ms) {
-  return new Promise((res) => setTimeout(res, ms));
+function tagSectionsFromGraph(graphIds) {
+  graphIds.forEach((id, index) => {
+    const el = document.querySelector('[data-h2e-vid="' + id + '"]');
+    if (el) {
+      el.setAttribute('data-h2e-section', String(index));
+    }
+  });
 }
 
-module.exports = { renderToLayout, DEFAULT_CONFIG };
+module.exports = { renderToLayout, DEFAULT_CONFIG, RESPONSIVE_WIDTHS };

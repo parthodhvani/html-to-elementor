@@ -34,12 +34,22 @@ final class Settings {
 			'service_url'        => 'http://127.0.0.1:8745',
 			'service_token'      => '',
 			// Conversion behaviour.
-			'conversion_mode'    => 'preserve', // "preserve" | "widgets".
-			'widget_confidence'  => 95,         // Minimum % confidence to convert a node to a widget.
+			'conversion_mode'    => 'preserve', // "preserve" | "widgets" | "reconstruct".
+			'widget_confidence'  => 90,         // Minimum % confidence to convert a node to a widget.
+			'fidelity_threshold' => 95,        // Target visual fidelity score (0-100).
+			'max_repair_iterations' => 3,      // Automatic repair loop limit.
+			'engine_version'     => 2,          // Visual reconstruction engine version.
 			'breakpoints'        => array(
 				'desktop' => 1280,
 				'tablet'  => 768,
 				'mobile'  => 375,
+				'w1920'   => 1920,
+				'w1440'   => 1440,
+				'w1280'   => 1280,
+				'w1024'   => 1024,
+				'w768'    => 768,
+				'w480'    => 480,
+				'w375'    => 375,
 			),
 			'wait_until'         => 'networkidle0',
 			'render_timeout_ms'  => 60000,
